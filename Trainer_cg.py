@@ -6,16 +6,17 @@ import math
 # 40 x 40 images
 Data = np.load("../data/data.npy")
 Data_val = np.load("../data/data_val.npy")
+#Data_val = 
 training_iters = Data.shape[0]
 n_valid = Data_val.shape[0]
 
 #training_iters = 32000
-n_valid = 32
+#n_valid = 32
 batch_size = 32
 display_step = 10
 tot_step = training_iters/batch_size
-n_repeat = 1
-n_decay = 10
+n_repeat = 5
+n_decay = 20
 decay_step = tot_step//n_decay
 #print(decay_step)
 #Learning rate
@@ -23,8 +24,8 @@ c_learning_start = 0.001
 g_learning_start = 0.001
 i_learning_start = 0.001
 r_learning_start = 0.001
-c_learning_end = 0.0001
-g_learning_end = 0.0001
+c_learning_end = 0.000001
+g_learning_end = 0.000001
 i_learning_end = 0.0001
 r_learning_end = 0.0001
 
@@ -66,7 +67,7 @@ def conv2d(x, W, b, stride = 1, act_func = 'ReLU', use_bn = True):
     if act_func == 'Sigmoid': x = tf.nn.sigmoid(x)
     if act_func == 'Softmax': x = tf.nn.softmax(x)
     if act_func == 'None': pass
-    if use_bn: return slim.batch_norm(x)
+    if use_bn: return slim.batch_norm(x, fused=False)
     else: return x
 
 def com_net(x, weights, biases):
@@ -82,7 +83,7 @@ def com_net(x, weights, biases):
 def gen_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
     x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
-    for i in range(2, 6):
+    for i in range(2, 18):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
     	x = conv2d(x, weights[name_w], biases[name_b])
@@ -184,7 +185,7 @@ def next_batch(prev, size):
 
 # Com
 img_com = com_net(img_input, var_com['weights'], var_com['biases'])
-img_res = gen_net(img_com, var_gen['weights'], var_gen['biases'])
+img_res = gen_net(img_com, var_gen['weights'],var_gen['biases'])
 
 # Gen
 img_dscale = tf.image.resize_images(img_com, [hh, ww])
@@ -231,7 +232,7 @@ img_cor = cor_net(img_input_cor,var_cor['weights'],var_cor['biases'])
 
 img_real_final = img_final + img_cor
 # Define loss and optimizer
-com_loss = tf.losses.mean_squared_error(img_ans - img_com, img_res)
+com_loss = tf.losses.mean_squared_error(img_ans, img_com + img_res)
 gen_loss = tf.losses.mean_squared_error(img_ans - img_uscale, img_res_gen)
 img_loss = tf.losses.mean_squared_error(img_ans_prob, img_prob)
 #img_loss = tf.losses.softmax_cross_entropy(img_ans_prob, img_prob)
@@ -261,7 +262,7 @@ def create_op(opt, loss, var_list, glob_step):
     capped_gvs = [None if grad is None else (tf.clip_by_value(grad, -1., 1.), var) for grad, var in gvs]
     return opt.apply_gradients(capped_gvs, global_step = glob_step)
     ''' 
-com_op = create_op(c_opt, com_loss, var_com, glob_step_c)
+com_op = create_op(c_opt, gen_loss, var_com, glob_step_c)
 '''
 #com_grad, com_var = zip(*c_opt.compute_gradients(com_loss, var_list=var_com))
 #grads, _ = tf.clip_by_global_norm(com_grad, 1.0)
@@ -295,7 +296,7 @@ cor_train = 1
 saver = tf.train.Saver()
 
 with sess:
-    #saver.restore(sess, "./model/best/cg-model.ckpt-4")
+    #saver.restore(sess, "./model/best/cg-model.ckpt-0")
     sess.run(init)
     # Keep training until reach max iterations
     for i in range(n_repeat):

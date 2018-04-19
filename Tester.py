@@ -30,7 +30,7 @@ def conv2d(x, W, b, stride = 1, act_func = 'ReLU', use_bn = True):
     if act_func == 'Sigmoid': x = tf.nn.sigmoid(x)
     if act_func == 'Softmax': x = tf.nn.softmax(x)
     if act_func == 'None': pass
-    if use_bn: return slim.batch_norm(x)
+    if use_bn: return slim.batch_norm(x, fused=False)
     else: return x
 
 def com_net(x, weights, biases):
@@ -46,7 +46,7 @@ def com_net(x, weights, biases):
 def gen_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
     x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
-    for i in range(2, 6):
+    for i in range(2, 18):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
     	x = conv2d(x, weights[name_w], biases[name_b])
@@ -117,9 +117,13 @@ var_cor = make_dict(18, 32, 'r', 1, 1)
 
 #learning_rate = start_learning_rate
 
-def next_batch(x):
+def next_batch(x, size=-1):
     data = []
-    data.append(Data[x])
+    if size==-1:
+        data.append(Data[x])
+    else:
+    	for i in range(size):
+    		data.append(Data[x+i])
     data = np.array(data)
     data = data.reshape(-1, h, w, c)
     return data, data
@@ -132,10 +136,13 @@ img_res = gen_net(img_com, var_gen['weights'], var_gen['biases'])
 
 # Gen
 img_dscale = tf.image.resize_images(img_com, [hh, ww])
+#img_dscale = tf.image.resize_images(img_input, [hh, ww])
+#img_uscale = tf.placeholder([None, h, w, c])
 img_uscale = tf.image.resize_images(img_dscale, [h, w])
 
 img_res_gen = gen_net(img_uscale, var_gen['weights'], var_gen['biases'])
 img_final = img_res_gen + img_uscale
+#img_final = img_uscale
 
 # Img
 img_prob = img_net(img_input, var_img['weights'], var_img['biases'])
@@ -199,26 +206,21 @@ sess = tf.Session(config=config)
 max_acc = 0.
 
 p_acc = []
-Log = open('Log_cg.txt', 'w')
-Log.close()
-saver = tf.train.Saver(max_to_keep = None)
+#Log = open('Log_cg.txt', 'w')
+#Log.close()
 
-com_train = 1
-gen_train = 1
-
-img_train = 1
-cor_train = 1
 saver = tf.train.Saver()
 
 with sess:
-    saver.restore(sess, "./model/cg-model.ckpt-0")
+    saver.restore(sess, "./model/best/cg-model.ckpt-4")
     step = 0
-    while step < test_size:
-        batch_x, batch_y = next_batch(step) 
-        h, w = batch_x.shape[1], batch_x.shape[2]
-        hh, ww = h//4, w//4
+    tot_mse = 0.
+    while step < 1:#test_size:
+        batch_x, batch_y = next_batch(step, test_size) 
+        #h, w = batch_x.shape[1], batch_x.shape[2]
+        #hh, ww = h//4, w//4
         feed_dict = {img_input: batch_x, img_ans: batch_y}
-        img_cor_prob, img_fin = sess.run([img_prob, img_uscale], feed_dict=feed_dict)
+        img_cor_prob, img_fin = sess.run([img_prob, img_final], feed_dict=feed_dict)
         img_inc, img_val = cor_compress(batch_x, img_cor_prob)
         img_cor_decom = cor_decompress(img_inc, img_val, img_fin)
         feed_dict_cor = {img_input: batch_x, img_ans: batch_y, img_input_cor: img_cor_decom}
@@ -230,8 +232,15 @@ with sess:
         
         ans = batch_y
         closs, gloss = sess.run((com_loss, gen_loss), feed_dict=feed_dict)
+        #print(img_fin, ans)
+        for i in range(test_size):
+        	#X = np.reshape(batch_x[i], [-1, h, w, c])
+        	#feed_dict = {img_input: X, img_ans: X}
+        	#img_fin_2=sess.run(img_final, feed_dict=feed_dict)
+        	#print(img_fin[i], img_fin_2)
+        	tot_mse+=get_mse(img_fin[i], ans[i])
         print(gloss, get_mse(img_fin, ans))
         print(str(step)+": "+"{:.5f}".format(get_psnr(img_fin, ans)))
-        step += 1
-
+        step += test_size
+    print(tot_mse/test_size)
 print('FINISHED!!!!!')
