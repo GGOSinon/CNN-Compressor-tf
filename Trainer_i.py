@@ -293,6 +293,7 @@ with sess:
     # Keep training until reach max iterations
     for i in range(n_repeat):
         step = 1
+        RandArr = np.random.permutation(training_iters)
         while step * batch_size < training_iters:
             global_step = step*batch_size
             batch_x, batch_y = next_batch(step*batch_size,batch_size)

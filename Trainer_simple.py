@@ -11,16 +11,16 @@ n_valid = Data_val.shape[0]
 
 #training_iters = 2560
 n_valid = 32
-c_learning_rate = 0.01
-i_learning_rate = 0.01
-c_learning_end = 0.0001
-i_learning_end = 0.0001
+cg_learning_rate = 0.01
+ir_learning_rate = 0.01
+cg_learning_end = 0.0001
+ir_learning_end = 0.0001
 n_repeat = 50
 n_decay = 10
 cg_decay_rate = pow(cg_learning_end/cg_learning_rate,1./(n_repeat*n_decay))
 ir_decay_rate = pow(ir_learning_end/ir_learning_rate,1./(n_repeat*n_decay))
 #print(pow(cg_decay_rate, n_repeat))
-batch_size = 128
+batch_size = 32
 display_step = 10
 tot_step = training_iters/batch_size
 decay_step = tot_step//10
@@ -255,20 +255,17 @@ def cor_decompress(img_inc, img_val, img_fin):
 img_cor = cor_net(img_input_cor,var_cor['weights'],var_cor['biases'])
 
 img_real_final = img_final + img_cor
-# Define Loss and optimizer
+# Define loss and optimizer
 com_loss = tf.losses.mean_squared_error(img_ans - img_com, img_res)
 gen_loss = tf.losses.mean_squared_error(img_ans - img_uscale, img_res_gen)
 img_loss = tf.losses.mean_squared_error(img_ans_prob, img_prob)
 #img_loss = tf.losses.softmax_cross_entropy(img_ans_prob, img_prob)
 cor_loss = tf.losses.mean_squared_error(img_ans - img_final, img_cor)
 
-# Optimizer
-c_opt = tf.train.AdamOptimizer(learning_rate = c_learning_rate)
-cvs = optimizer.compute_gradients(com_loss, var_list=var_com)
-capped_cvs = [(tf.clip_by_value(grad, -1., 1.), var) for grad, var in cvs]
-com_op = c_opt.apply_gradients(capped_gvs)
+cg_opt = tf.train.AdamOptimizer(learning_rate = cg_learning_rate)
+ir_opt = tf.train.AdamOptimizer(learning_rate = ir_learning_rate)
 
-#com_op = cg_opt.minimize(com_loss, var_list = var_com)
+com_op = cg_opt.minimize(com_loss, var_list = var_com)
 gen_op = cg_opt.minimize(gen_loss, var_list = var_gen)
 img_op = ir_opt.minimize(img_loss, var_list = var_img)
 cor_op = ir_opt.minimize(cor_loss, var_list = var_cor)

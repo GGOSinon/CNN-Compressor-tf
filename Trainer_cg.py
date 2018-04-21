@@ -2,37 +2,44 @@ import tensorflow as tf
 import tensorflow.contrib.slim as slim
 import numpy as np
 import math
+from ImageFunctions import *
 
 # 40 x 40 images
 Data = np.load("../data/data.npy")
-Data_val = np.load("../data/data_val.npy")
-#Data_val = 
+Data_val = np.load("../data/data_val.npy") 
 training_iters = Data.shape[0]
 n_valid = Data_val.shape[0]
 
-#training_iters = 32000
-#n_valid = 32
+#training_iters = 32
+n_valid = 32
 batch_size = 32
 display_step = 10
 tot_step = training_iters/batch_size
-n_repeat = 5
-n_decay = 20
-decay_step = tot_step//n_decay
+n_repeat = 50
+n_decay = 3
+decay_step = (tot_step//n_decay)//2
+qf = 10
+
 #print(decay_step)
-#Learning rate
+#Learning rate : Best 0.0005
 c_learning_start = 0.001
 g_learning_start = 0.001
 i_learning_start = 0.001
 r_learning_start = 0.001
-c_learning_end = 0.000001
-g_learning_end = 0.000001
+c_learning_end = 0.00001
+g_learning_end = 0.00001
 i_learning_end = 0.0001
 r_learning_end = 0.0001
 
-c_decay_rate = pow(c_learning_end/c_learning_start,1./(n_repeat*n_decay))
-g_decay_rate = pow(g_learning_end/g_learning_start,1./(n_repeat*n_decay))
-i_decay_rate = pow(i_learning_end/i_learning_start,1./(n_repeat*n_decay))
-r_decay_rate = pow(r_learning_end/r_learning_start,1./(n_repeat*n_decay))
+com_train = 1
+gen_train = 1
+img_train = 1
+cor_train = 1
+
+c_decay_rate = pow(c_learning_end/c_learning_start,1./(n_repeat*n_decay*com_train))
+g_decay_rate = pow(g_learning_end/g_learning_start,1./(n_repeat*n_decay*gen_train))
+i_decay_rate = pow(i_learning_end/i_learning_start,1./(n_repeat*n_decay*img_train))
+r_decay_rate = pow(r_learning_end/r_learning_start,1./(n_repeat*n_decay*cor_train))
 
 glob_step_c = tf.Variable(0, trainable = False)
 glob_step_g = tf.Variable(0, trainable = False)
@@ -49,6 +56,7 @@ r_learning_rate = tf.train.exponential_decay(r_learning_start, glob_step_r, deca
 n_prob = 20
 h_prob, w_prob = 3, 3
 c, h, w = Data.shape[3], Data.shape[1], Data.shape[2]
+c_val, h_val, w_val = Data_val.shape[3], Data_val.shape[1], Data_val.shape[2]
 compress_rate = 4
 hh, ww = h/compress_rate, w/compress_rate
 
@@ -56,44 +64,56 @@ gpu_device = ['/device:GPU:0', '/device:GPU:1']
 img_input = tf.placeholder(tf.float32, [None, h, w, c])
 img_ans = tf.placeholder(tf.float32, [None, h, w, c]) 
 img_input_cor = tf.placeholder(tf.float32, [None, h, w, c])
+img_input_gen = tf.placeholder(tf.float32, [None, h, w, c])
 
-def conv2d(x, W, b, stride = 1, act_func = 'ReLU', use_bn = True):
+def leaky_relu(x, alpha=0.2):
+    return tf.maximum(x, alpha * x)
+
+def conv2d(x, W, b, stride = 1, act_func = 'LReLU', use_bn = True):
     strides = [1, stride, stride, 1]
     # Conv2D wrapper, with bias and relu activation
     x = tf.nn.conv2d(x, W, strides, padding='SAME')
     x = tf.nn.bias_add(x, b)
+    if act_func == 'LReLU': x = leaky_relu(x)
     if act_func == 'ReLU': x = tf.nn.relu(x)
     if act_func == 'TanH': x = tf.nn.tanh(x)
     if act_func == 'Sigmoid': x = tf.nn.sigmoid(x)
     if act_func == 'Softmax': x = tf.nn.softmax(x)
     if act_func == 'None': pass
-    if use_bn: return slim.batch_norm(x, fused=False)
+    if use_bn: return slim.batch_norm(x)
     else: return x
 
 def com_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
-    x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
+    x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False)
+    
     for i in range(2, 3):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
-    	x = conv2d(x, weights[name_w], biases[name_b])   
+    	x = conv2d(x, weights[name_w], biases[name_b], act_func = 'LReLU')   
+    
     res = conv2d(x, weights['wcx'], biases['bcx'], act_func='None', use_bn = False)
     return res
 
 def gen_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
-    x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
-    for i in range(2, 18):
-    	name_w = 'wc'+str(i)
-    	name_b = 'bc'+str(i)
-    	x = conv2d(x, weights[name_w], biases[name_b])
+    x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False) 
+    for i in range(1, 6/2):
+    	x_input = x
+    	name_w = 'wc'+str(2*i)
+    	name_b = 'bc'+str(2*i)
+    	x_input = conv2d(x_input, weights[name_w], biases[name_b], act_func='LReLU')
+    	name_w = 'wc'+str(2*i+1)
+    	name_b = 'bc'+str(2*i+1)
+    	x_input = conv2d(x_input, weights[name_w], biases[name_b], act_func='None')
+    	x = leaky_relu(x_input + x)
     res = conv2d(x, weights['wcx'], biases['bcx'], act_func='None', use_bn = False)
     return res
 
 def img_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
     x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
-    for i in range(2, 3):
+    for i in range(2, 6):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
     	x = conv2d(x, weights[name_w], biases[name_b])
@@ -116,7 +136,7 @@ def cor_net(x, weights, biases):
     return res
 
 def make_grad(s, e, name):
-     return tf.get_variable(name, [3, 3, s, e], initializer=tf.contrib.layers.xavier_initializer())
+    return tf.get_variable(name, [3, 3, s, e], initializer=tf.contrib.layers.xavier_initializer())
     
 def make_bias(x, name):
     return tf.get_variable(name, [x], initializer=tf.contrib.layers.xavier_initializer())
@@ -146,11 +166,11 @@ def make_dict(num_layer, num_filter, end_str, s_filter = 1, e_filter = 1):
     result['biases'] = biases
     return result
 
-var_com = make_dict(3, 32, 'c', 1, 1)
+var_com = make_dict(5, 64, 'c', 1, 1)
 print(var_com)
-var_gen = make_dict(18, 32, 'g', 1, 1)
-var_img = make_dict(18, 32, 'i', 1, 1)
-var_cor = make_dict(18, 32, 'r', 1, 1)
+var_gen = make_dict(25, 64, 'g', 1, 1)
+var_img = make_dict(25, 64, 'i', 1, 1)
+var_cor = make_dict(25, 64, 'r', 1, 1)
 
 
 print(Data.shape)
@@ -168,7 +188,7 @@ def valid_batch(prev, size):
 		if i+prev>=n_valid: continue
 		data.append(Data_val[i+prev])
 	data = np.array(data)
-	data = data.reshape(-1, h, w, c)
+	data = data.reshape(-1, h_val, w_val, c_val)
 	return data, data
 
 def next_batch(prev, size):
@@ -188,11 +208,14 @@ img_com = com_net(img_input, var_com['weights'], var_com['biases'])
 img_res = gen_net(img_com, var_gen['weights'],var_gen['biases'])
 
 # Gen
-img_dscale = tf.image.resize_images(img_com, [hh, ww])
-img_uscale = tf.image.resize_images(img_dscale, [h, w])
+#img_dscale = tf.image.resize_images(img_com, [hh, ww])
+#img_uscale = tf.image.resize_images(img_dscale, [h, w])
 
-img_res_gen = gen_net(img_uscale, var_gen['weights'], var_gen['biases'])
-img_final = img_res_gen + img_uscale
+#img_res_gen = gen_net(img_uscale, var_gen['weights'], var_gen['biases'])
+img_res_gen = gen_net(img_input_gen, var_gen['weights'], var_gen['biases'])
+
+#img_final = img_res_gen + img_uscale
+img_final = img_res_gen + img_input_gen
 
 # Img
 img_prob = img_net(img_input, var_img['weights'], var_img['biases'])
@@ -233,16 +256,16 @@ img_cor = cor_net(img_input_cor,var_cor['weights'],var_cor['biases'])
 img_real_final = img_final + img_cor
 # Define loss and optimizer
 com_loss = tf.losses.mean_squared_error(img_ans, img_com + img_res)
-gen_loss = tf.losses.mean_squared_error(img_ans - img_uscale, img_res_gen)
+gen_loss = tf.losses.mean_squared_error(img_ans, img_final)
 img_loss = tf.losses.mean_squared_error(img_ans_prob, img_prob)
 #img_loss = tf.losses.softmax_cross_entropy(img_ans_prob, img_prob)
 cor_loss = tf.losses.mean_squared_error(img_ans - img_final, img_cor)
 
 
-c_opt = tf.train.AdamOptimizer(learning_rate=c_learning_rate)
-g_opt = tf.train.AdamOptimizer(learning_rate=g_learning_rate)
-i_opt = tf.train.AdamOptimizer(learning_rate=i_learning_rate)
-r_opt = tf.train.AdamOptimizer(learning_rate=r_learning_rate)
+c_opt = tf.train.AdamOptimizer(learning_rate=c_learning_rate, epsilon = 1e-4)
+g_opt = tf.train.AdamOptimizer(learning_rate=g_learning_rate, epsilon = 1e-4)
+i_opt = tf.train.AdamOptimizer(learning_rate=i_learning_rate, epsilon = 1e-4)
+r_opt = tf.train.AdamOptimizer(learning_rate=r_learning_rate, epsilon = 1e-4)
 
 #c_opt = tf.train.GradientDescentOptimizer(learning_rate=c_learning_rate)
 #g_opt = tf.train.GradientDescentOptimizer(learning_rate=g_learning_rate)
@@ -253,25 +276,17 @@ r_opt = tf.train.AdamOptimizer(learning_rate=r_learning_rate)
 def create_op(opt, loss, var_list, glob_step):
      
     grads, var = zip(*opt.compute_gradients(loss, var_list = var_list))
-    grads = [None if grad is None else tf.clip_by_value(grad, -1., 1.0) for grad in grads]
-    #grads = [None if grad is None else tf.clip_by_norm(grad, 1.0) for grad in grads]
+    #grads = [None if grad is None else tf.clip_by_value(grad, -1., 1.0) for grad in grads]
+    grads = [None if grad is None else tf.clip_by_norm(grad, 1.0) for grad in grads]
     return opt.apply_gradients(zip(grads, var), global_step = glob_step)
      
     '''
     gvs = opt.compute_gradients(loss, var_list=var_list)
     capped_gvs = [None if grad is None else (tf.clip_by_value(grad, -1., 1.), var) for grad, var in gvs]
     return opt.apply_gradients(capped_gvs, global_step = glob_step)
+    m
     ''' 
-com_op = create_op(c_opt, gen_loss, var_com, glob_step_c)
-'''
-#com_grad, com_var = zip(*c_opt.compute_gradients(com_loss, var_list=var_com))
-#grads, _ = tf.clip_by_global_norm(com_grad, 1.0)
-for grad in grads:
-	if grad is None: continue
-	grad_check = tf.check_numerics(grad, "LOL")
-with tf.control_dependencies([grad_check]):
-    com_op = c_opt.apply_gradients(zip(grads, com_var), global_step = glob_step_c)
-'''
+com_op = create_op(c_opt, com_loss, var_com, glob_step_c)
 gen_op = create_op(g_opt, gen_loss, var_gen, glob_step_g)
 img_op = create_op(i_opt, img_loss, var_img, glob_step_i)
 cor_op = create_op(r_opt, cor_loss, var_cor, glob_step_r)
@@ -287,13 +302,9 @@ p_acc = []
 Log = open('Log_cg.txt', 'w')
 Log.close()
 saver = tf.train.Saver(max_to_keep = None)
+#saver = tf.train.Saver()
 
-com_train = 1
-gen_train = 1
-
-img_train = 1
-cor_train = 1
-saver = tf.train.Saver()
+turn = 'gen'
 
 with sess:
     #saver.restore(sess, "./model/best/cg-model.ckpt-0")
@@ -307,28 +318,46 @@ with sess:
             batch_x, batch_y =next_batch(step*batch_size,batch_size)
             #print(batch_x, batch_y)
             feed_dict = {img_input: batch_x, img_ans: batch_y}
+            img_compressed = sess.run(img_input, feed_dict=feed_dict)
             #print(sess.run([com_grad, com_loss, grad_check], feed_dict=feed_dict))
-            for _ in range(com_train):
-            	#print(batch_x.shape, batch_x.dtype)
-                sess.run(com_op, feed_dict=feed_dict)
+            batch_jpeg = get_jpeg_from_batch(img_compressed, h, w, qf)
+            feed_dict = {img_input: batch_x, img_ans: batch_y, img_input_gen: batch_jpeg}
+
             for _ in range(gen_train):
+            #if turn == 'gen':
                 #print(img_compressed.shape, img_compressed.dtype)
             	sess.run(gen_op, feed_dict=feed_dict) 
             
+            for _ in range(com_train):
+            #if turn == 'com':
+            	#pass
+            	#print(batch_x.shape, batch_x.dtype)
+                sess.run(com_op, feed_dict=feed_dict)
+
             if step % display_step == 0:
                 print("com_lr: "+"{:.6f}".format(sess.run(c_opt._lr))+", gen_lr: "+"{:.6f}".format(sess.run(g_opt._lr)))
-                closs = sess.run(com_loss, feed_dict=feed_dict)
-                gloss = sess.run(gen_loss, feed_dict=feed_dict) 
-                print ("Step " + str(i) + ", Iter " + str(step*batch_size) + ", Minibatch CLoss= " + "{:.6f}".format(closs) + ", Minibatch GLoss= " + "{:.6f}".format(gloss))
-
+                closs, gloss = sess.run([com_loss, gen_loss], feed_dict=feed_dict)
+                #gloss = sess.run(gen_loss, feed_dict=feed_dict) 
+                #print ("Step " + str(i) + ", Iter " + str(step*batch_size) + ", Minibatch CLoss= " + "{:.6f}".format(closs) + ", Minibatch GLoss= " + "{:.6f}".format(gloss))
+                print("Step " + str(i) + ", Iter " + str(step*batch_size) + ", Minibatch GLoss= " + "{:.6f}".format(gloss))
+                #print("Com : " + str(get_mse(img_compressed, batch_jpeg)))
+                raw_loss = get_mse(batch_x, get_jpeg_from_batch(batch_x, h, w, qf))
+                #print("Raw : "+ str(raw_loss))
+                print("Profit : " + str(raw_loss-gloss))
                 valid_x, valid_y = valid_batch(0, n_valid)
-                feed_dict_val={img_input:valid_x,img_ans:valid_y}
-                val_closs = sess.run(com_loss, feed_dict=feed_dict_val)
-                val_gloss = sess.run(gen_loss, feed_dict=feed_dict_val)
+                feed_dict={img_input:valid_x, img_ans:valid_y}
+                #print(valid_x.shape)
+                img_compressed = sess.run(img_input, feed_dict=feed_dict)
+                batch_jpeg =get_jpeg_from_batch(img_compressed, h_val, w_val, qf)
+                feed_dict = {img_input: valid_x, img_ans: valid_y, img_input_gen: batch_jpeg}
+                val_closs = sess.run(com_loss, feed_dict=feed_dict)
+                val_gloss = sess.run(gen_loss, feed_dict=feed_dict)
                 print ("Testing CLoss : %.5f, GLoss : %.5f" % (val_closs, val_gloss))
                 Log = open('Log_cg.txt', 'a')
                 Log.write("C: "+"{:.5f}".format(val_closs)+" G: "+"{:.5f}".format(val_gloss)+"\n")
                 Log.close()
+                if turn == 'com': turn = 'gen'
+                else : turn = 'com'
             #if step % decay_step==0:cg_learning_rate*=cg_decay_rate
             step+=1
         saver.save(sess, './model/cg-model.ckpt', global_step=i)
