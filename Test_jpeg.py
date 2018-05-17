@@ -3,10 +3,11 @@ from ImageFunctions import *
 #Data = np.load("../data/data_val.npy")
 h, w = 40, 40
 H, W = 512//h, 512//w
-Data = make_batch_with_image("../data/images/final/lena.bmp")
+skip_pixel = [40, 40]
+Data = make_batch_with_path("../data/images/final/lena.bmp", skip_pixel = skip_pixel)
 print(Data.shape)
 #img_ans = Data
-qf = 5
+qf = 10
 
 h, w = Data.shape[1], Data.shape[2]
 
@@ -22,6 +23,8 @@ for i in range(H):
         x.save('prev-'+str(K)+'.png')
 '''
 img0 = merge_image(img0)
+Data = img0
+
 img_ans = img0
 img0 = denormalize_img(img0)#(Data*255).astype(np.uint8)
 img0 = np.reshape(img0, (H*h,W*w))

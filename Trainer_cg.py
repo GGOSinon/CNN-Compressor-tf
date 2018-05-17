@@ -5,29 +5,30 @@ import math
 from ImageFunctions import *
 
 # 40 x 40 images
-Data = np.load("../data/data.npy")
-Data_val = np.load("../data/data_val.npy") 
+Data = np.load("../data/data_240.npy")
+Data_val = np.load("../data/data_240_val.npy") 
 training_iters = Data.shape[0]
 n_valid = Data_val.shape[0]
 
 #training_iters = 32
-n_valid = 32
-batch_size = 32
+n_valid = 1
+batch_size = 8
 display_step = 10
 tot_step = training_iters/batch_size
-n_repeat = 50
-n_decay = 3
-decay_step = (tot_step//n_decay)//2
+n_repeat = 5
+n_decay = 10
+decay_step = (tot_step//n_decay)
 qf = 10
+var_list = []
 
 #print(decay_step)
-#Learning rate : Best 0.0005
+#Learning rate : Best 00005
 c_learning_start = 0.001
 g_learning_start = 0.001
-i_learning_start = 0.001
-r_learning_start = 0.001
-c_learning_end = 0.00001
-g_learning_end = 0.00001
+i_learning_start = 0.0005
+r_learning_start = 0.0005
+c_learning_end = 0.0001
+g_learning_end = 0.0001
 i_learning_end = 0.0001
 r_learning_end = 0.0001
 
@@ -69,14 +70,20 @@ img_input_gen = tf.placeholder(tf.float32, [None, h, w, c])
 def leaky_relu(x, alpha=0.2):
     return tf.maximum(x, alpha * x)
 
-def conv2d(x, W, b, stride = 1, act_func = 'LReLU', use_bn = True):
+def conv2d(x, W, b, stride = 1, act_func = 'LReLU', use_bn = True, padding = 'SAME'):
     strides = [1, stride, stride, 1]
     # Conv2D wrapper, with bias and relu activation
-    x = tf.nn.conv2d(x, W, strides, padding='SAME')
+    sz = [[0,0],[1,1],[1,1],[0,0]]
+    if padding == 'SAME':
+        x = tf.nn.conv2d(x, W, strides, padding='SAME')
+    if padding == 'VALID':
+        x = tf.pad(x, sz, mode='SYMMETRIC')
+        x = tf.nn.conv2d(x, W, strides, padding='VALID')
     x = tf.nn.bias_add(x, b)
     if act_func == 'LReLU': x = leaky_relu(x)
     if act_func == 'ReLU': x = tf.nn.relu(x)
     if act_func == 'TanH': x = tf.nn.tanh(x)
+    if act_func == 'PReLU': x = leaky_relu(x)#tf.keras.layers.PReLU(x)
     if act_func == 'Sigmoid': x = tf.nn.sigmoid(x)
     if act_func == 'Softmax': x = tf.nn.softmax(x)
     if act_func == 'None': pass
@@ -85,20 +92,21 @@ def conv2d(x, W, b, stride = 1, act_func = 'LReLU', use_bn = True):
 
 def com_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
-    x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False)
+    #x_input = x
+    x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False, padding='VALID')
     
-    for i in range(2, 3):
+    for i in range(2, 2):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
-    	x = conv2d(x, weights[name_w], biases[name_b], act_func = 'LReLU')   
+    	x = conv2d(x, weights[name_w], biases[name_b], act_func = 'LReLU', padding='VALID')   
     
-    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='None', use_bn = False)
+    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='Sigmoid', use_bn = False, padding='VALID')
     return res
 
 def gen_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
     x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False) 
-    for i in range(1, 6/2):
+    for i in range(1, 8//2):
     	x_input = x
     	name_w = 'wc'+str(2*i)
     	name_b = 'bc'+str(2*i)
@@ -107,13 +115,13 @@ def gen_net(x, weights, biases):
     	name_b = 'bc'+str(2*i+1)
     	x_input = conv2d(x_input, weights[name_w], biases[name_b], act_func='None')
     	x = leaky_relu(x_input + x)
-    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='None', use_bn = False)
+    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='TanH', use_bn = False)
     return res
 
 def img_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
     x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
-    for i in range(2, 6):
+    for i in range(2, 2):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
     	x = conv2d(x, weights[name_w], biases[name_b])
@@ -136,10 +144,14 @@ def cor_net(x, weights, biases):
     return res
 
 def make_grad(s, e, name):
-    return tf.get_variable(name, [3, 3, s, e], initializer=tf.contrib.layers.xavier_initializer())
-    
+    var = tf.get_variable(name, [3, 3, s, e], initializer=tf.contrib.layers.xavier_initializer())
+    var_list.append(var)
+    return var
+
 def make_bias(x, name):
-    return tf.get_variable(name, [x], initializer=tf.contrib.layers.xavier_initializer())
+    var = tf.get_variable(name, [x], initializer=tf.contrib.layers.xavier_initializer())
+    var_list.append(var)
+    return var
 
 def make_dict(num_layer, num_filter, end_str, s_filter = 1, e_filter = 1):
     
@@ -166,11 +178,11 @@ def make_dict(num_layer, num_filter, end_str, s_filter = 1, e_filter = 1):
     result['biases'] = biases
     return result
 
-var_com = make_dict(5, 64, 'c', 1, 1)
+var_com = make_dict(5, 32, 'c', 1, 1)
 print(var_com)
-var_gen = make_dict(25, 64, 'g', 1, 1)
-var_img = make_dict(25, 64, 'i', 1, 1)
-var_cor = make_dict(25, 64, 'r', 1, 1)
+var_gen = make_dict(25, 32, 'g', 1, 1)
+var_img = make_dict(25, 32, 'i', 1, 1)
+var_cor = make_dict(25, 32, 'r', 1, 1)
 
 
 print(Data.shape)
@@ -255,6 +267,9 @@ img_cor = cor_net(img_input_cor,var_cor['weights'],var_cor['biases'])
 
 img_real_final = img_final + img_cor
 # Define loss and optimizer
+#com_jpeg_loss = tf.losses.mean_squared_error(img_com, img_input_gen)
+#com_raw_loss = tf.losses.mean_squared_error(img_ans, img_com + img_res)
+#com_loss = com_jpeg_loss + com_raw_loss
 com_loss = tf.losses.mean_squared_error(img_ans, img_com + img_res)
 gen_loss = tf.losses.mean_squared_error(img_ans, img_final)
 img_loss = tf.losses.mean_squared_error(img_ans_prob, img_prob)
@@ -277,7 +292,7 @@ def create_op(opt, loss, var_list, glob_step):
      
     grads, var = zip(*opt.compute_gradients(loss, var_list = var_list))
     #grads = [None if grad is None else tf.clip_by_value(grad, -1., 1.0) for grad in grads]
-    grads = [None if grad is None else tf.clip_by_norm(grad, 1.0) for grad in grads]
+    grads = [None if grad is None else tf.clip_by_norm(grad, 0.5) for grad in grads]
     return opt.apply_gradients(zip(grads, var), global_step = glob_step)
      
     '''
@@ -286,6 +301,18 @@ def create_op(opt, loss, var_list, glob_step):
     return opt.apply_gradients(capped_gvs, global_step = glob_step)
     m
     ''' 
+'''
+def get_reg(var_list, name_weight):
+    weight_list = {}
+    for name, weights in var_list:
+        weight = tf.reduce_mean(weights)
+        weight_list[name] = weight
+    if name_weight=='com':
+        return weight_list[0] + weight_list[1]
+'''
+#com_reg_loss = get_reg(var_com['weights'])
+#com_loss += com_reg_loss
+
 com_op = create_op(c_opt, com_loss, var_com, glob_step_c)
 gen_op = create_op(g_opt, gen_loss, var_gen, glob_step_g)
 img_op = create_op(i_opt, img_loss, var_img, glob_step_i)
@@ -301,14 +328,15 @@ max_acc = 0.
 p_acc = []
 Log = open('Log_cg.txt', 'w')
 Log.close()
-saver = tf.train.Saver(max_to_keep = None)
+saver = tf.train.Saver(var_list = var_list, max_to_keep = None)
 #saver = tf.train.Saver()
-
+min_loss = 1.
 turn = 'gen'
 
 with sess:
-    #saver.restore(sess, "./model/best/cg-model.ckpt-0")
     sess.run(init)
+    saver.restore(sess, "./model/best/cg-model.ckpt-qf=10-best")
+    #sess.run(init)
     # Keep training until reach max iterations
     for i in range(n_repeat):
         step = 0
@@ -318,11 +346,12 @@ with sess:
             batch_x, batch_y =next_batch(step*batch_size,batch_size)
             #print(batch_x, batch_y)
             feed_dict = {img_input: batch_x, img_ans: batch_y}
-            img_compressed = sess.run(img_input, feed_dict=feed_dict)
+            img_compressed = sess.run(img_com, feed_dict=feed_dict)
+            #print(img_compressed[0][20])
             #print(sess.run([com_grad, com_loss, grad_check], feed_dict=feed_dict))
             batch_jpeg = get_jpeg_from_batch(img_compressed, h, w, qf)
             feed_dict = {img_input: batch_x, img_ans: batch_y, img_input_gen: batch_jpeg}
-
+            
             for _ in range(gen_train):
             #if turn == 'gen':
                 #print(img_compressed.shape, img_compressed.dtype)
@@ -343,23 +372,34 @@ with sess:
                 #print("Com : " + str(get_mse(img_compressed, batch_jpeg)))
                 raw_loss = get_mse(batch_x, get_jpeg_from_batch(batch_x, h, w, qf))
                 #print("Raw : "+ str(raw_loss))
-                print("Profit : " + str(raw_loss-gloss))
+                print("Profit(Train) : " + str(raw_loss-gloss))
+                com_raw_loss = get_mse(img_compressed, get_jpeg_from_batch(img_compressed, h, w, qf))
+                print("Raw Loss of ComNet : %.5f" % com_raw_loss)
                 valid_x, valid_y = valid_batch(0, n_valid)
                 feed_dict={img_input:valid_x, img_ans:valid_y}
                 #print(valid_x.shape)
-                img_compressed = sess.run(img_input, feed_dict=feed_dict)
+                img_compressed = sess.run(img_com, feed_dict=feed_dict)
+                print(np.max(img_compressed[0]))
                 batch_jpeg =get_jpeg_from_batch(img_compressed, h_val, w_val, qf)
                 feed_dict = {img_input: valid_x, img_ans: valid_y, img_input_gen: batch_jpeg}
                 val_closs = sess.run(com_loss, feed_dict=feed_dict)
                 val_gloss = sess.run(gen_loss, feed_dict=feed_dict)
+                com_raw_loss = get_mse(img_compressed, get_jpeg_from_batch(img_compressed, h, w, qf))
+                val_raw_loss = get_mse(valid_x, get_jpeg_from_batch(valid_x, h, w, qf))
+                print("Profit(Valid) : " + str(val_raw_loss-val_gloss))
+                print("Raw Loss of ComNet : %.5f" % com_raw_loss)
+
                 print ("Testing CLoss : %.5f, GLoss : %.5f" % (val_closs, val_gloss))
                 Log = open('Log_cg.txt', 'a')
                 Log.write("C: "+"{:.5f}".format(val_closs)+" G: "+"{:.5f}".format(val_gloss)+"\n")
                 Log.close()
                 if turn == 'com': turn = 'gen'
                 else : turn = 'com'
+                if min_loss>val_gloss:
+                	min_loss = val_gloss
+                	saver.save(sess, './model/cg-model.ckpt-qf='+str(qf)+'-best')
             #if step % decay_step==0:cg_learning_rate*=cg_decay_rate
             step+=1
-        saver.save(sess, './model/cg-model.ckpt', global_step=i)
-
+        saver.save(sess, './model/cg-model.ckpt-qf='+str(qf), global_step=i)
+print('Minimum Loss : '+str(min_loss))
 print('FINISHED!!!!!')

@@ -4,16 +4,24 @@ import numpy as np
 import math
 from ImageFunctions import *
 from PIL import Image
-Data = make_batch_with_image("../data/images/final/lena.bmp")
+from skimage.measure import compare_ssim as ssim
+
+#skip_pixel = [40, 40]
+h, w = 256, 256
+skip_pixel = [h, w]
+size = [256, 256]
+
+Data = make_batch_with_path("../data/images/final/house.png", size = [h, w], skip_pixel = skip_pixel)
 #Data = np.load("../data/data_val.npy")
 test_size = Data.shape[0]
 print(Data.shape)
-n_prob = 20
+n_prob = (size[0]*size[1])//400
 h_prob, w_prob = 3, 3
 #c, h, w = 1, 256, 256
 c, h, w = Data.shape[3], Data.shape[1], Data.shape[2]
 compress_rate = 4
-qf = 5
+qf = 10
+var_list = []
 #hh, ww = h/compress_rate, w/compress_rate
 
 gpu_device = ['/device:GPU:0', '/device:GPU:1']
@@ -25,10 +33,13 @@ img_input_gen = tf.placeholder(tf.float32, [None, h, w, c])
 def leaky_relu(x, alpha = 0.2):
     return tf.maximum(x, alpha * x)
 
-def conv2d(x, W, b, stride = 1, act_func = 'ReLU', use_bn = True):
+def conv2d(x, W, b, stride = 1, act_func = 'ReLU', use_bn = True, padding = 'SAME'):
     strides = [1, stride, stride, 1]
+    sz = 1
     # Conv2D wrapper, with bias and relu activation
     x = tf.nn.conv2d(x, W, strides, padding='SAME')
+    #x = tf.pad(x, [[0, 0],[sz, sz], [sz, sz], [0, 0]], "SYMMETRIC")
+    #x = tf.nn.conv2d(x, W, strides, padding='VALID')
     x = tf.nn.bias_add(x, b)
     if act_func == 'LReLU': x = leaky_relu(x)
     if act_func == 'ReLU': x = tf.nn.relu(x)
@@ -42,58 +53,49 @@ def conv2d(x, W, b, stride = 1, act_func = 'ReLU', use_bn = True):
 def com_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
     x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False)
-    for i in range(2, 3):
+    for i in range(2, 2):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
     	x = conv2d(x, weights[name_w], biases[name_b], act_func = 'LReLU')   
-    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='None', use_bn = False)
+    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='Sigmoid', use_bn = False)
     return res
 
 def gen_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
     x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False)
-    for i in range(1, 4/2):
-    	x_input = x
+    for i in range(1, 8//2):
+       	x_input = x
         name_w = 'wc'+str(2*i)
         name_b = 'bc'+str(2*i)
-        x = conv2d(x, weights[name_w], biases[name_b], act_func='LReLU')
+        x_input = conv2d(x_input, weights[name_w], biases[name_b], act_func='LReLU')
         name_w = 'wc'+str(2*i+1)
         name_b = 'bc'+str(2*i+1)
-        x = conv2d(x, weights[name_w], biases[name_b], act_func='None')
+        x_input = conv2d(x_input, weights[name_w], biases[name_b], act_func='None')
         x = leaky_relu(x_input + x)
-    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='None', use_bn = False)
-    return res
-
-def img_net(x, weights, biases):
-    x = tf.reshape(x, (-1, h, w, c))
-    x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
-    for i in range(2, 6):
-    	name_w = 'wc'+str(i)
-    	name_b = 'bc'+str(i)
-    	x = conv2d(x, weights[name_w], biases[name_b])
- 
-    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='Softmax', use_bn = False)
-    #fc1 = conv2d(conv3, weights['wd1'], biases['bd1'])
-    #out = tf.add(tf.matmul(fc1, weights['out']), biases['out'])
+    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='TanH', use_bn = False)
     return res
 
 def cor_net(x, weights, biases):
     x = tf.reshape(x, (-1, h, w, c))
-    x = conv2d(x, weights['wc1'], biases['bc1'], use_bn = False)
-    for i in range(2, 7):
+    #eturn x
+    x = conv2d(x, weights['wc1'], biases['bc1'], act_func = 'LReLU', use_bn = False)
+    for i in range(2, 2):
     	name_w = 'wc'+str(i)
     	name_b = 'bc'+str(i)
-    	x = conv2d(x, weights[name_w], biases[name_b]) 
-    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='None', use_bn = False)
+    	x = conv2d(x, weights[name_w], biases[name_b], act_func = 'LReLU') 
+    res = conv2d(x, weights['wcx'], biases['bcx'], act_func='TanH', use_bn = False)
     #fc1 = conv2d(conv3, weights['wd1'], biases['bd1'])
     #out = tf.add(tf.matmul(fc1, weights['out']), biases['out'])
     return res
 
 def make_grad(s, e, name):
-     return tf.get_variable(name, [3, 3, s, e], initializer=tf.contrib.layers.xavier_initializer())
-    
+    var = tf.get_variable(name, [3, 3, s, e], initializer=tf.contrib.layers.xavier_initializer())
+    var_list.append(var)
+    return var
 def make_bias(x, name):
-    return tf.get_variable(name, [x], initializer=tf.contrib.layers.xavier_initializer())
+    var = tf.get_variable(name, [x], initializer=tf.contrib.layers.xavier_initializer())
+    var_list.append(var)
+    return var
 
 def make_dict(num_layer, num_filter, end_str, s_filter = 1, e_filter = 1):
     
@@ -120,11 +122,11 @@ def make_dict(num_layer, num_filter, end_str, s_filter = 1, e_filter = 1):
     result['biases'] = biases
     return result
 
-var_com = make_dict(5, 64, 'c', 1, 1)
+var_com = make_dict(5, 32, 'c', 1, 1)
 print(var_com)
-var_gen = make_dict(18, 64, 'g', 1, 1)
-var_img = make_dict(18, 64, 'i', 1, 1)
-var_cor = make_dict(18, 64, 'r', 1, 1)
+var_gen = make_dict(18, 32, 'g', 1, 1)
+var_img = make_dict(18, 32, 'i', 1, 1)
+var_cor = make_dict(18, 32, 'r', 1, 1)
 
 #learning_rate = start_learning_rate
 
@@ -157,36 +159,38 @@ img_res_gen = gen_net(img_input_gen, var_gen['weights'], var_gen['biases'])
 img_final = img_res_gen + img_input_gen
 #img_final = img_uscale
 
-# Img
-img_prob = img_net(img_input, var_img['weights'], var_img['biases'])
-img_delta = tf.reduce_mean(img_ans - img_final,axis=3,keep_dims=True)
-img_ans_prob = tf.nn.l2_normalize(img_delta, dim=None)
-
 # Cor
-def cor_compress(img, p_img):
+def cor_compress(img, img_ans):
     sz_prob = img.shape[0]
     img_inc = np.zeros([sz_prob, n_prob], dtype=np.int32)
     img_val = np.zeros([sz_prob, n_prob], dtype=np.float32)
-
+    p_img = np.absolute(img - img_ans)
     for i in range(sz_prob):
         p_img_flatten = np.reshape(p_img[i], [-1])
-        img_flatten = np.reshape(img[i], [-1])
+        img_flatten = np.reshape(img_ans[i] - img[i], [-1])
         incides = np.argpartition(p_img_flatten,-n_prob)[-n_prob:]
         for j in range(n_prob):
             inc = incides[j]
-            img_inc[i][j]=inc
-            img_val[i][j]=img_flatten[inc]
+            img_inc[i][j] = inc
+            img_val[i][j] = img_flatten[inc]
     #img_res = np.array(img_res)
     #img_input_cor = tf.convert_to_tensor(img_input_cor_np)
     return img_inc, img_val
 
-def cor_decompress(img_inc, img_val, img_fin):
+def bound_img(img):
+    img_fin = img
+    img_fin = np.maximum(img_fin, 0.)
+    img_fin = np.minimum(img_fin, 1.)
+    img_fin = denormalize_img(img_fin)
+    img_fin = normalize_img(img_fin)
+    return img_fin
+
+def cor_decompress(img_inc, img_val):
     sz_img = img_inc.shape[0]
     img_decom = np.zeros([sz_img, h*w*c], dtype=np.float32)
-    img_fin_flat = np.reshape(img_fin, [-1, h*w*c])
     for i in range(sz_img):
         for j in range(n_prob):
-            inc,val = img_inc[i][j],img_val[i][j]-img_fin_flat[i][j] 
+            inc,val = img_inc[i][j], img_val[i][j]
             img_decom[i][inc] = val
     img_decom = np.reshape(img_decom, [-1, h, w, c])
     return img_decom
@@ -198,9 +202,20 @@ def get_mse(x, y):
     mse = (delta**2).mean(axis=None)
     return mse
 
-def get_psnr(x, y):
+def get_psnr(x, y): 
     mse = get_mse(x, y)
     return -10*(math.log(mse)/math.log(10))
+
+def get_ssim(x, y):
+    #x = bound_img(xx)
+    #y = bound_img(yy)
+    x = np.reshape(x, size)
+    y = np.reshape(y, size)
+    x = np.array(x, dtype=np.float64)
+    y = np.array(y, dtype=np.float64)
+    xy = np.stack((x,y), axis=0)
+    print(x.shape)
+    return ssim(x, y, data_range=1., gaussian_weights = True, sigma=1.5, use_sample_convariance = False)
 
 img_cor = cor_net(img_input_cor,var_cor['weights'],var_cor['biases'])
 
@@ -208,7 +223,7 @@ img_real_final = img_final + img_cor
 # Define loss and optimizer
 com_loss = tf.losses.mean_squared_error(img_ans - img_com, img_res)
 gen_loss = tf.losses.mean_squared_error(img_ans, img_final)
-img_loss = tf.losses.mean_squared_error(img_ans_prob, img_prob)
+#img_loss = tf.losses.mean_squared_error(img_ans_prob, img_prob)
 #img_loss = tf.losses.softmax_cross_entropy(img_ans_prob, img_prob)
 cor_loss = tf.losses.mean_squared_error(img_ans - img_final, img_cor)
 # Initializing the variables
@@ -222,48 +237,74 @@ p_acc = []
 #Log = open('Log_cg.txt', 'w')
 #Log.close()
 
-#saver = tf.train.Saver(var_list)
+saver = tf.train.Saver(var_list)
 #saver = tf.train.Saver()
 
 with sess: 
     sess.run(init)
-    saver = tf.train.Saver()
-    saver.restore(sess, "./model/best/cg-model.ckpt-49")
+    #saver = tf.train.Saver()
+    saver.restore(sess, "./model/best/r-model.ckpt-qf=10-best")
     step = 0
     tot_mse = 0.
     while step < 1:#test_size:
         batch_x, batch_y = next_batch(step, test_size) 
+        #print(batch_x.shape)
         #h, w = batch_x.shape[1], batch_x.shape[2]
         #hh, ww = h//4, w//4
-        h, w, H, W = 40, 40, 512//40, 512//40
+        H, W = 1+((size[0]-h)//skip_pixel[0]), 1+((size[1]-w)//skip_pixel[1])
+        size[0], size[1] = (H-1)*skip_pixel[0] + h, (W-1)*skip_pixel[0] + w
+        #print(H, W, h, w)
         feed_dict = {img_input: batch_x, img_ans: batch_y}
-        img_compressed = sess.run(img_input, feed_dict = feed_dict)
-        #print(h, w)
+        img_compressed = sess.run(img_com, feed_dict = feed_dict) 
         batch_jpeg = get_jpeg_from_batch(img_compressed, h, w, qf)
-        print(batch_jpeg.shape)
+
         feed_dict = {img_input: batch_x, img_ans: batch_y, img_input_gen: batch_jpeg}
+        
         img_fin = sess.run(img_final, feed_dict = feed_dict)
-        #img_cor_prob, img_fin = sess.run([img_prob, img_final], feed_dict=feed_dict)
-        #img_inc, img_val = cor_compress(batch_x, img_cor_prob)
-        #img_cor_decom = cor_decompress(img_inc, img_val, img_fin)
-        #feed_dict_cor = {img_input: batch_x, img_ans: batch_y, img_input_cor: img_cor_decom}
-        #img_real_fin = sess.run(img_real_final, feed_dict=feed_dict_cor)
-        Img_fin = np.reshape(img_fin, (H, W, h, w))
-        Img_fin = merge_image(Img_fin)
-        Img_fin = denormalize_img(Img_fin)
-        Img_fin = np.reshape(Img_fin, (h*H, w*W))
-        Img_fin = Image.fromarray(Img_fin, 'L')
+        img_inc, img_val = cor_compress(img_fin, batch_y)
+        print(img_val)
+        print(np.max(batch_y - img_fin))
+        img_cor_d = cor_decompress(img_inc, img_val)
+        feed_dict = {img_input: batch_x, img_ans: batch_y, img_input_gen: batch_jpeg, img_input_cor: img_cor_d}
+        
+        img_real_fin = sess.run(img_real_final, feed_dict = feed_dict)
+        
+        Img_fin = np_to_image(img_fin, (H, W, h, w), skip_pixel)
         Img_fin.save('./final_result-'+str(step)+'.png')
-        #Img_real_fin = Image.fromarray(img_real_fin[0], 'RGB')
-        #Img_real_fin.save('./result/'+str(step)+'-cor.png')
+
+        Img_delta = np_to_image(np.absolute(batch_y-img_fin), (H, W, h, w), skip_pixel)
+        Img_delta.save('./final_result-'+str(step)+'-delta.png')
+        
+        Img_ans = np_to_image(batch_y, (H, W, h, w), skip_pixel)
+        Img_ans.save('./final_result-'+str(step)+'-ans.png')
+
+        Img_jpeg = np_to_image(batch_y, (H, W, h, w), skip_pixel)
+        Img_jpeg.save('./final_result-'+str(step)+'-jpeg.jpeg', quality = qf)
+
+        Img_d = np_to_image(np.absolute(img_cor_d), (H, W, h, w), skip_pixel)
+        Img_d.save('./final_result-'+str(step)+'-d.png')
+
+        Img_real_fin = np_to_image(img_real_fin, (H, W, h, w), skip_pixel)
+        Img_real_fin.save('./final_result-'+str(step)+'-cor.png')
+        
+        img_fin = bound_img(img_fin)
+        img_real_fin = bound_img(img_real_fin)
         
         ans = batch_y
         closs, gloss = sess.run((com_loss, gen_loss), feed_dict=feed_dict)
+        rloss = sess.run(cor_loss, feed_dict = feed_dict)
         #print(img_fin, ans)
         for i in range(test_size):
-        	tot_mse+=get_mse(img_fin[i], ans[i])
+            tot_mse+=get_mse(img_fin[i], ans[i])
+        
+        batch_jpeg = get_jpeg_from_batch(batch_x, h, w, qf)
+        print(str(step)+": "+"PSNR = {:.5f}".format(get_psnr(batch_jpeg, ans))+" SSIM = {:.5f}".format(get_ssim(batch_jpeg, ans)))
+
         print(gloss, get_mse(img_fin, ans))
-        print(str(step)+": "+"{:.5f}".format(get_psnr(img_fin, ans)))
+        print(str(step)+": "+"PSNR = {:.5f}".format(get_psnr(img_fin, ans))+" SSIM = {:.5f}".format(get_ssim(img_fin, ans)))
+        print(rloss, get_mse(img_real_fin, ans))
+        print(str(step)+": "+"PSNR = {:.5f}".format(get_psnr(img_real_fin, ans))+" SSIM = {:.5f}".format(get_ssim(img_real_fin, ans)))
+        #print(str(step)+": "+"RLoss = {:.5f}".format(rloss))
         step += test_size
-    print(tot_mse/test_size)
+    #print(tot_mse/test_size)
 print('FINISHED!!!!!')
